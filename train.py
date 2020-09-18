@@ -89,8 +89,8 @@ class VAE(nn.Module):
     def forward(self, x):
         mean, var = self._encoder(x)
         z = self._sample_z(mean, var)
-        x = self._decoder(z)
-        return x, z
+        o = self._decoder(z)
+        return o, z
 
     def loss(self, x):
         mean, var = self._encoder(x)
@@ -99,6 +99,7 @@ class VAE(nn.Module):
         out = self._decoder(z)
 
         recons_loss = self.loss_function(out.view(-1,out.shape[2]), y.view(-1))
+        recons_loss = (y.view(-1)!=0)*recons_loss
         recons_loss = torch.mean(recons_loss)
         lower_bound = [KL, recons_loss] 
         return sum(lower_bound)
@@ -109,6 +110,24 @@ class VAE(nn.Module):
         out = self._decoder(z)
         return out
 
+    
+def y_to_symbol(out,vocab):
+    out_index=np.argmax(out,axis=2)
+    vocab_inv={v:k for k,v in vocab.items()}
+    smi_out=[]
+    for v in out_index:
+        smi=[]
+        for el in v:
+            a=vocab_inv[int(el)]
+            smi.append(a)
+        smi_s="".join(smi)
+        smi_out.append(smi_s)
+    return smi_out
+
+def out_to_symbol(out,vocab):
+    out_index=np.argmax(out,axis=2)
+    return y_to_symbol(out,vocab)
+
 #train_data,vocab=load_smi_data("train.smi")
 train_data,vocab=load_smi_data("train.smi")
 valid_data,vocab=load_smi_data("valid.smi",vocab=vocab)
@@ -117,37 +136,50 @@ print("#valid_data:",len(valid_data))
 print("#vocab",len(vocab))
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print("device:",device)
 batch_size=256
 trainset=SmiDataset(train_data)
 trainloader = torch.utils.data.DataLoader(trainset, collate_fn=collate_fn,batch_size=batch_size)
+validset=SmiDataset(valid_data)
+validloader = torch.utils.data.DataLoader(validset, collate_fn=collate_fn,batch_size=batch_size)
 model = VAE(64,vocab)
+model.to(device)
 # 最適化の手法はSGDで。lossの減りに時間かかるけど、一旦はこれを使う。
 optimizer = optim.Adam(model.parameters(), lr=0.001)
-for epoch in range(10):
+for epoch in range(100):
     all_loss=0
     for x,y in trainloader:
+        x=x.to(device)
+        y=y.to(device)
         model.zero_grad()
         #out,z = model(x)
         loss = model.loss(x)
         loss.backward()
         optimizer.step()
-        loss=loss.detach().clone().numpy()
+        loss=loss.cpu().detach().clone().numpy()
         all_loss = loss+all_loss
     print(all_loss)
 
 model_path = 'model.pth'
 torch.save(model.state_dict(), model_path)
-
+####
+print("=== generation 1 ===")
 o=model.generate(10,43)
-out=o.detach().clone().numpy()
-out_index=np.argmax(out,axis=2)
-
-vocab_inv={v:k for k,v in vocab.items()}
-for v in out_index:
-    smi=[]
-    for el in v:
-        a=vocab_inv[int(el)]
-        smi.append(a)
-    smi_s="".join(smi)
-    print(smi_s)
+out=o.cpu().detach().clone().numpy()
+smi_out = out_to_symbol(out,vocab)
+for s in smi_out:
+    print(s)
+###
+print("=== generation 2 ===")
+for x,y in validloader:
+    x=x.to(device)
+    o,z=model(x)
+    o=o.cpu().detach().clone().numpy()
+    smi_out = out_to_symbol(out,vocab)
+    smi_y = y_to_symbol(y,vocab)
+    for i,sy in enumerate(smi_y):
+        so=smi_out[i]
+        print(sy)
+        print("  ",so)
+    #out,z = model(x)
 
